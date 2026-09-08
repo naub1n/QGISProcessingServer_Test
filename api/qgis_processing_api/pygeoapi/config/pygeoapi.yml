@@ -1,0 +1,65 @@
+server:
+  bind:
+    host: 0.0.0.0
+    port: 8080
+
+  url: http://localhost:8080/oapi/
+
+  mimetype: application/json; charset=UTF-8
+  encoding: utf-8
+  gzip: true
+  languages:
+    - en-US
+    - fr-FR
+
+  limits:
+    default_items: 10
+    max_items: 1000
+
+  manager:
+    name: TinyDB
+    connection: /data/jobs.db
+    output_dir: /data/
+
+
+logging:
+  level: INFO
+
+
+metadata:
+
+  identification:
+    title: QGIS Processing API
+    description: pygeoapi + QGIS processing worker
+    keywords:
+      - qgis
+      - processing
+      - ogc
+
+    url: http://localhost:8080/oapi/
+
+    terms_of_service: https://example.com/terms
+
+
+  license:
+    name: CC-BY-4.0
+    url: https://creativecommons.org/licenses/by/4.0/
+
+
+  provider:
+    name: Demo organisation
+    url: https://example.com
+
+
+  contact:
+    name: Admin
+    position: Administrator
+    email: admin@example.com
+    url: https://example.com
+
+
+resources:
+  qgis:
+    type: process
+    processor:
+      name: qgis_process.QGISRemoteProcessor

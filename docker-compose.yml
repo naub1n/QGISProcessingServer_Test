@@ -1,0 +1,21 @@
+services:
+  pygeoapi:
+    build: ./api
+    container_name: pygeoapi_with_scheduler
+    ports:
+      - "8080:8000"
+    environment:
+      PYTHONPATH: /qgis_processing_api/pygeoapi/plugins    
+
+  qgis-worker:
+    build: ./worker
+    container_name: qgis-worker
+    environment:
+      QT_QPA_PLATFORM: offscreen
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./worker/data:/data
+      - ./worker/processing/scripts:/root/.local/share/QGIS/QGIS3/profiles/default/processing/scripts
+      - ./worker/processing/models:/root/.local/share/QGIS/QGIS3/profiles/default/processing/models
+      - ./worker/QGIS3.ini:/root/.local/share/QGIS/QGIS3/profiles/default/QGIS/QGIS3.ini:ro

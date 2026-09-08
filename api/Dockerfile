@@ -1,0 +1,18 @@
+FROM python:3.12-slim
+
+COPY . /
+
+COPY requirements.txt /requirements.txt
+RUN pip install --no-cache-dir -r /requirements.txt
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV PYGEOAPI_CONFIG=/qgis_processing_api/pygeoapi/config/pygeoapi.yml
+ENV PYGEOAPI_OPENAPI=/qgis_processing_api/pygeoapi/config/openapi.yml
+
+WORKDIR /qgis_processing_api
+
+EXPOSE 8000
+
+ENTRYPOINT ["/entrypoint.sh"]

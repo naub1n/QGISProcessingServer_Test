@@ -1,0 +1,6 @@
+pygeoapi==0.24.0
+starlette==0.48.0
+uvicorn==0.35.0
+apscheduler==3.11.0
+aiofiles
+httpx
