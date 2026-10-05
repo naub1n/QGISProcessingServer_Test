@@ -27,6 +27,10 @@ services:
     container_name: qgis-worker
     environment:
       QT_QPA_PLATFORM: offscreen
+      # "true" : trace les inputs/outputs de tous les jobs (sinon, seuls
+      # les jobs en erreur affichent inputs/stdout/stderr).
+      WORKER_DEBUG: "false"
+      # WORKER_LOG_MAX_CHARS: "5000"
     ports:
       - "8000:8000"
     volumes:

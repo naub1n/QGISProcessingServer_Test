@@ -3,6 +3,51 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import subprocess
 import json
+import os
+import sys
+import time
+import uuid
+import logging
+from pathlib import Path
+
+
+# WORKER_DEBUG=true : trace les inputs/outputs de tous les jobs.
+DEBUG = os.environ.get("WORKER_DEBUG", "false").strip().lower() in (
+    "1", "true", "yes", "on"
+)
+
+# Taille maximale (caractères) des inputs/outputs/stderr écrits dans les logs.
+LOG_MAX_CHARS = int(os.environ.get("WORKER_LOG_MAX_CHARS", "5000"))
+
+# Logger dédié avec son propre handler : indépendant de la configuration
+# de logging d'uvicorn (qui ne configure pas le logger racine).
+logger = logging.getLogger("qgis-worker")
+logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
+logger.propagate = False
+
+if not logger.handlers:
+    _handler = logging.StreamHandler(sys.stderr)
+    _handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    )
+    logger.addHandler(_handler)
+
+logger.info("Worker démarré (WORKER_DEBUG=%s)", DEBUG)
+
+
+def to_log(value) -> str:
+    """Sérialise une valeur pour les logs, tronquée à LOG_MAX_CHARS."""
+
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            value = repr(value)
+
+    if len(value) > LOG_MAX_CHARS:
+        return f"{value[:LOG_MAX_CHARS]}... [tronqué, {len(value)} caractères]"
+
+    return value
 
 
 app = FastAPI(
@@ -66,7 +111,7 @@ def clean_error_message(stderr: str, stdout: str) -> str:
     return "\n".join(unique_lines)
 
 
-def run_qgis_process(algorithm: str, inputs: dict):
+def run_qgis_process(algorithm: str, inputs: dict, job_id: str = "-"):
 
     cmd = [
         "qgis_process",
@@ -79,6 +124,11 @@ def run_qgis_process(algorithm: str, inputs: dict):
         "inputs": inputs
     }
 
+    logger.info("[job %s] START algorithm=%s", job_id, algorithm)
+    logger.debug("[job %s] inputs=%s", job_id, to_log(inputs))
+
+    started = time.monotonic()
+
     try:
         process = subprocess.run(
             cmd,
@@ -88,11 +138,18 @@ def run_qgis_process(algorithm: str, inputs: dict):
         )
 
     except Exception as e:
+        logger.error(
+            "[job %s] ERROR algorithm=%s duration=%.2fs "
+            "(échec du lancement: %s)\n  inputs=%s",
+            job_id, algorithm, time.monotonic() - started, e, to_log(inputs)
+        )
         raise QGISExecutionError(
             algorithm=algorithm,
             returncode=-1,
             message=str(e)
         ) from e
+
+    duration = time.monotonic() - started
 
     try:
         result = json.loads(process.stdout)
@@ -110,24 +167,119 @@ def run_qgis_process(algorithm: str, inputs: dict):
             process.stdout
         )
 
+        logger.error(
+            "[job %s] ERROR algorithm=%s returncode=%s duration=%.2fs\n"
+            "  message=%s\n  inputs=%s\n  stdout=%s\n  stderr=%s",
+            job_id, algorithm, process.returncode, duration,
+            to_log(message), to_log(inputs),
+            to_log(process.stdout), to_log(process.stderr)
+        )
+
         raise QGISExecutionError(
             algorithm=algorithm,
             returncode=process.returncode,
             message=message
         )
 
+    logger.info(
+        "[job %s] SUCCESS algorithm=%s duration=%.2fs",
+        job_id, algorithm, duration
+    )
+    logger.debug("[job %s] outputs=%s", job_id, to_log(result))
+
     return result
+
+
+MODELS_DIR = Path(
+    os.environ.get(
+        "QGIS_MODELS_DIR",
+        "/root/.local/share/QGIS/QGIS3/profiles/default/processing/models"
+    )
+)
+
+
+@app.get("/algorithms/{algorithm_id:path}")
+def check_algorithm(algorithm_id: str):
+    """
+    Vérifie que le worker connaît l'algorithme QGIS (ex. native:buffer,
+    model:mon_modele). 200 si présent, 404 sinon.
+    """
+
+    try:
+        process = qgis_executor.submit(
+            subprocess.run,
+            ["qgis_process", "help", algorithm_id, "--json"],
+            text=True,
+            capture_output=True
+        ).result()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e)}
+        ) from e
+
+    if process.returncode != 0:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": f"Algorithm '{algorithm_id}' not found",
+                "algorithm": algorithm_id
+            }
+        )
+
+    return {
+        "algorithm": algorithm_id,
+        "exists": True
+    }
+
+
+@app.get("/models/{name}")
+def check_model(name: str):
+    """
+    Vérifie que le fichier .model3 existe dans le dossier des modèles
+    du profil QGIS. `name` est accepté avec ou sans extension.
+    """
+
+    stem = name[:-len(".model3")] if name.endswith(".model3") else name
+
+    # Pas de séparateur de chemin : on ne cherche que dans MODELS_DIR.
+    if not stem or stem in (".", "..") or "/" in stem or "\\" in stem:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": f"Invalid model name '{name}'"}
+        )
+
+    path = MODELS_DIR / f"{stem}.model3"
+
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": f"Model '{stem}.model3' not found",
+                "model": stem
+            }
+        )
+
+    return {
+        "model": stem,
+        "file": path.name,
+        "algorithm": f"model:{stem}",
+        "exists": True
+    }
 
 
 @app.post("/execute")
 def execute(request: JobRequest):
+
+    job_id = uuid.uuid4().hex[:8]
 
     try:
 
         future = qgis_executor.submit(
             run_qgis_process,
             request.algorithm,
-            request.inputs
+            request.inputs,
+            job_id
         )
 
         # Attend la fin du job.
@@ -150,6 +302,11 @@ def execute(request: JobRequest):
         ) from e
 
     except Exception as e:
+
+        logger.exception(
+            "[job %s] UNEXPECTED ERROR algorithm=%s\n  inputs=%s",
+            job_id, request.algorithm, to_log(request.inputs)
+        )
 
         raise HTTPException(
             status_code=500,

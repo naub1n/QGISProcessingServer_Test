@@ -10,6 +10,7 @@ RUN python3 -m venv /opt/venv  && \
 ENV QGIS_PREFIX_PATH=/usr
 ENV XDG_RUNTIME_DIR=/tmp/runtime-root
 ENV QT_QPA_PLATFORM=offscreen
+ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/usr/share/qgis/python
 
 COPY app.py /app.py
