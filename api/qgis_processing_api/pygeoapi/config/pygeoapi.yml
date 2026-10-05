@@ -17,9 +17,27 @@ server:
     max_items: 1000
 
   manager:
-    name: TinyDB
+    name: user_tinydb_manager.UserTinyDBManager
     connection: /data/jobs.db
     output_dir: /data/
+
+  # Alternative PostgreSQL (necessite psycopg2-binary, cf. requirements.txt) :
+  # manager:
+  #   name: user_postgresql_manager.UserPostgreSQLManager
+  #   connection:
+  #     host: postgres
+  #     port: 5432
+  #     dbname: pygeoapi
+  #     user: pygeoapi
+  #     password: changeme
+  #     search_path: [public]
+  #   output_dir: /data/
+
+  # Alternative MongoDB (necessite pymongo, cf. requirements.txt) :
+  # manager:
+  #   name: user_mongodb_manager.UserMongoDBManager
+  #   connection: mongodb://mongo:27017/
+  #   output_dir: /data/
 
 
 logging:

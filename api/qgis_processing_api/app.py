@@ -1,11 +1,21 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from pygeoapi.starlette_app import APP as pygeoapi_app
 
+from auth import (
+    ContextPreservingExecutor,
+    ForwardedUserMiddleware,
+    get_groups,
+    get_user,
+    is_admin,
+)
 from scheduler.scheduler import Scheduler
 from scheduler.routes import (
     list_schedules,
@@ -37,7 +47,15 @@ async def lifespan(app: Starlette):
     Le scheduler est démarré lorsque Starlette démarre
     et arrêté proprement lorsque Starlette s'arrête.
     """
-    
+
+    # pygeoapi exécute ses endpoints (et donc UserTinyDBManager) via
+    # loop.run_in_executor(None, ...), qui par défaut ne propage pas les
+    # ContextVar dans le thread. Sans cet executor, le manager ne saurait
+    # jamais quel utilisateur a fait la requête.
+    asyncio.get_running_loop().set_default_executor(
+        ContextPreservingExecutor()
+    )
+
     app.state.scheduler = scheduler
 
     scheduler.start()
@@ -64,21 +82,13 @@ async def homepage(request):
     )
 
 
-async def list_schedules(request):
-    schedules = scheduler.list_schedules()
-
+async def me(request: Request):
     return JSONResponse(
-        [
-            {
-                "id": schedule.id,
-                "process_id": schedule.process_id,
-                "trigger": schedule.trigger,
-                "trigger_args": schedule.trigger_args,
-                "inputs": schedule.inputs,
-                "enabled": schedule.enabled,
-            }
-            for schedule in schedules
-        ]
+        {
+            "user": get_user(request),
+            "groups": get_groups(request),
+            "is_admin": is_admin(request),
+        }
     )
 
 
@@ -88,6 +98,7 @@ async def list_schedules(request):
 
 routes = [
     Route("/", homepage),
+    Route("/me", me),
     # Scheduler
     Route(
         "/schedules",
@@ -131,6 +142,7 @@ app = Starlette(
     debug=True,
     routes=routes,
     lifespan=lifespan,
+    middleware=[Middleware(ForwardedUserMiddleware)],
 )
 
 # ----------------------------------------------------------------------

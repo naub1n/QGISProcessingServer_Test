@@ -46,6 +46,9 @@ class Schedule:
     # Tâche active ou non
     enabled: bool = True
 
+    # Utilisateur (X-Forwarded-User) ayant créé la tâche
+    owner: str | None = None
+
 
 class Scheduler:
     """
@@ -243,6 +246,7 @@ class Scheduler:
             job_id = self.execute_process(
                 process_id=schedule.process_id,
                 inputs=schedule.inputs,
+                owner=schedule.owner,
             )
 
             logger.info(
@@ -261,12 +265,20 @@ class Scheduler:
         self,
         process_id: str,
         inputs: dict[str, Any],
+        owner: str | None = None,
     ) -> str:
         url = f"http://127.0.0.1:8000/oapi/processes/{process_id}/execution"
 
         payload = {
             "inputs": inputs
         }
+
+        headers = {}
+        if owner:
+            # Le manager pygeoapi (UserTinyDBManager) associe le job à
+            # l'utilisateur porté par ce header, comme pour un appel
+            # entrant via Traefik.
+            headers["X-Forwarded-User"] = owner
 
         logger.info(
             "Calling pygeoapi process endpoint: %s",
@@ -276,6 +288,7 @@ class Scheduler:
         response = httpx.post(
             url,
             json=payload,
+            headers=headers,
             timeout=30.0,
         )
 

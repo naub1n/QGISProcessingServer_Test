@@ -6,56 +6,35 @@ from pygeoapi.process.base import BaseProcessor
 
 PROCESS_METADATA = {
     "version": "1.0.1",
-
     "id": "qgis",
-
     "title": "QGIS Processing",
-
-    "description":
-        "Execute QGIS Processing algorithms through a remote worker",
-
+    "description": "Execute QGIS Processing algorithms through a remote worker",
     "keywords": [
         "qgis",
         "processing",
         "gis"
     ],
-
     "jobControlOptions": [
         "async-execute"
     ],
-
     "inputs": {
-
         "algorithm": {
-
             "title": "QGIS algorithm",
-
-            "description":
-                "QGIS processing algorithm id, e.g. native:buffer",
-
+            "description": "QGIS processing algorithm id, e.g. native:buffer",
             "schema": {
                 "type": "string"
             }
         },
-
-
         "parameters": {
-
             "title": "Algorithm parameters",
-
             "schema": {
                 "type": "object"
             }
         }
     },
-
-
     "outputs": {
-
         "result": {
-
             "title": "Execution result",
-
             "schema": {
                 "type": "object"
             }
