@@ -4,3 +4,8 @@ uvicorn==0.35.0
 apscheduler==3.11.0
 aiofiles
 httpx
+
+# A decommenter selon le manager pygeoapi utilise (cf. pygeoapi.yml) :
+# UserPostgreSQLManager a besoin d'un driver DBAPI, UserMongoDBManager de pymongo.
+# psycopg2-binary
+# pymongo

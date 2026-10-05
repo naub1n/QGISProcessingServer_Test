@@ -5,7 +5,22 @@ services:
     ports:
       - "8080:8000"
     environment:
-      PYTHONPATH: /qgis_processing_api/pygeoapi/plugins    
+      PYTHONPATH: /qgis_processing_api:/qgis_processing_api/pygeoapi/plugins
+      # Gestion des utilisateurs (X-Forwarded-User / X-User-Groups
+      # injectés par Traefik). Passer à "false" pour désactiver
+      # entièrement l'authentification (pas de 401, owner vide partout).
+      AUTH_ENABLED: "true"
+      # ADMIN_USERS: "alice,bob"
+      # ADMIN_GROUPS: "admins"
+#    labels:
+#      traefik.enable: true
+#      traefik.http.routers.r_pygeoapi.rule: Host(`ogcapi.exemple.com`)
+#      traefik.http.routers.r_ogc_api.entrypoints: websecure
+#      traefik.http.routers.r_ogc_api.tls: true
+#      traefik.http.routers.r_ogc_api.priority: 10
+#      traefik.http.services.s_ogc_api.loadbalancer.server.port: 8000
+#      traefik.http.routers.r_ogc_api.service: s_ogc_api
+#      traefik.http.routers.r_ogc_api.middlewares: oidc-base@file
 
   qgis-worker:
     build: ./worker
