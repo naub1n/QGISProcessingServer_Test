@@ -8,7 +8,6 @@ import sys
 import time
 import uuid
 import logging
-from pathlib import Path
 
 
 # WORKER_DEBUG=true : trace les inputs/outputs de tous les jobs.
@@ -190,14 +189,6 @@ def run_qgis_process(algorithm: str, inputs: dict, job_id: str = "-"):
     return result
 
 
-MODELS_DIR = Path(
-    os.environ.get(
-        "QGIS_MODELS_DIR",
-        "/root/.local/share/QGIS/QGIS3/profiles/default/processing/models"
-    )
-)
-
-
 @app.get("/algorithms/{algorithm_id:path}")
 def check_algorithm(algorithm_id: str):
     """
@@ -229,41 +220,6 @@ def check_algorithm(algorithm_id: str):
 
     return {
         "algorithm": algorithm_id,
-        "exists": True
-    }
-
-
-@app.get("/models/{name}")
-def check_model(name: str):
-    """
-    Vérifie que le fichier .model3 existe dans le dossier des modèles
-    du profil QGIS. `name` est accepté avec ou sans extension.
-    """
-
-    stem = name[:-len(".model3")] if name.endswith(".model3") else name
-
-    # Pas de séparateur de chemin : on ne cherche que dans MODELS_DIR.
-    if not stem or stem in (".", "..") or "/" in stem or "\\" in stem:
-        raise HTTPException(
-            status_code=400,
-            detail={"message": f"Invalid model name '{name}'"}
-        )
-
-    path = MODELS_DIR / f"{stem}.model3"
-
-    if not path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "message": f"Model '{stem}.model3' not found",
-                "model": stem
-            }
-        )
-
-    return {
-        "model": stem,
-        "file": path.name,
-        "algorithm": f"model:{stem}",
         "exists": True
     }
 

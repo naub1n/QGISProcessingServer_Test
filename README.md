@@ -71,6 +71,17 @@ Ce que ça change concrètement :
 - Toute route de l'API (sauf `/`) exige un `X-Forwarded-User` et répond
   **401** en son absence.
 
+### Vérifier le contenu du worker
+
+`GET /worker/algorithms/{id}` interroge le worker QGIS : 200 si l'algorithme
+est connu, 404 sinon. Les modèles `.model3` se vérifient avec leur
+identifiant `model:<nom>` :
+
+```bash
+curl 'http://localhost:8080/worker/algorithms/native:buffer' -H 'X-Forwarded-User: alice'
+curl 'http://localhost:8080/worker/algorithms/model:ma_procedure' -H 'X-Forwarded-User: alice'
+```
+
 ### Désactiver la gestion des utilisateurs
 
 Si l'API n'est pas (encore) placée derrière un Traefik avec OIDC, la

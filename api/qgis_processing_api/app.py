@@ -1,5 +1,9 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager
+from urllib.parse import quote
+
+import httpx
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -92,6 +96,40 @@ async def me(request: Request):
     )
 
 
+WORKER_URL = os.environ.get("QGIS_WORKER_URL", "http://qgis-worker:8000")
+
+
+async def _proxy_worker_check(path: str) -> JSONResponse:
+    """
+    Relaye un GET de vérification au worker et reprend son code
+    (200 présent, 404 absent).
+    """
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(f"{WORKER_URL}{path}")
+    except httpx.HTTPError as e:
+        return JSONResponse(
+            {"message": f"Worker unreachable: {e}"},
+            status_code=502,
+        )
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {"message": response.text}
+
+    if isinstance(body, dict) and "detail" in body:
+        body = body["detail"]
+
+    return JSONResponse(body, status_code=response.status_code)
+
+
+async def check_worker_algorithm(request: Request):
+    algorithm_id = quote(request.path_params["algorithm_id"], safe=":/")
+    return await _proxy_worker_check(f"/algorithms/{algorithm_id}")
+
+
 # ----------------------------------------------------------------------
 # Application
 # ----------------------------------------------------------------------
@@ -99,6 +137,12 @@ async def me(request: Request):
 routes = [
     Route("/", homepage),
     Route("/me", me),
+    # Vérifications côté worker QGIS
+    Route(
+        "/worker/algorithms/{algorithm_id:path}",
+        check_worker_algorithm,
+        methods=["GET"],
+    ),
     # Scheduler
     Route(
         "/schedules",
