@@ -32,10 +32,20 @@ This is a two-container system that exposes a [pygeoapi](https://pygeoapi.io/) O
 
 ### Request flow
 
-1. `api/qgis_processing_api/app.py` is the actual ASGI entrypoint (`uvicorn app:app`). It is a Starlette app that mounts the real pygeoapi Starlette app (`pygeoapi.starlette_app.APP`) at `/oapi`, and adds its own routes (`/`, `/me`, `/schedules*`).
+1. `api/qgis_processing_api/app.py` is the actual ASGI entrypoint (`uvicorn app:app`). It is a Starlette app that mounts the real pygeoapi Starlette app (`pygeoapi.starlette_app.APP`) at `/oapi`, and adds its own routes (`/`, `/me`, `/schedules*`, `/oapi/worker/*`).
 2. A QGIS algorithm execution request hits pygeoapi's `/oapi/processes/qgis/execution`. pygeoapi resolves the `qgis` process to `api/qgis_processing_api/pygeoapi/plugins/qgis_process.py` (`QGISRemoteProcessor`), which does a synchronous HTTP POST to `http://qgis-worker:8000/execute`.
 3. `worker/app.py` (FastAPI, running inside the `qgis-worker` container which has a real QGIS install) runs the algorithm via the `qgis_process` CLI in a subprocess, capped at 4 concurrent executions (`ThreadPoolExecutor(max_workers=4)`), and returns the result synchronously.
 4. pygeoapi itself handles the async/job-tracking semantics (job IDs, status polling via `/oapi/jobs`) on top of that synchronous call, using a process manager (see "pygeoapi process managers" below).
+
+### Worker introspection and model publishing
+
+`app.py` also proxies three routes to the worker, via `httpx` to `WORKER_URL` (502 if the worker is unreachable; FastAPI's `{"detail": ...}` error wrapper is unwrapped):
+
+- `GET /oapi/worker/algorithms` → worker `GET /algorithms` (lists everything from `qgis_process list --json`).
+- `GET /oapi/worker/algorithms/{id}` → worker `GET /algorithms/{id}` (200/404; models use `model:<name>`).
+- `POST /oapi/worker/models` with `{"name", "model3"}` → worker `POST /models`, which validates the name (`MODEL_NAME_RE`) and that the XML root is `<Option>`, then atomically writes `<name>.model3` into `MODELS_DIR` (the `./worker/processing/models` volume), overwriting any existing model. Usable afterwards as `model:<name>`.
+
+These routes are declared **before** the `/oapi` mount in `routes` so they take precedence over pygeoapi; moving them after the mount would silently route them to pygeoapi (404). In the worker, `GET /algorithms` must stay declared before `/algorithms/{algorithm_id:path}`.
 
 ### Scheduler
 
