@@ -125,9 +125,60 @@ async def _proxy_worker_check(path: str) -> JSONResponse:
     return JSONResponse(body, status_code=response.status_code)
 
 
+async def list_worker_algorithms(request: Request):
+    return await _proxy_worker_check("/algorithms")
+
+
 async def check_worker_algorithm(request: Request):
     algorithm_id = quote(request.path_params["algorithm_id"], safe=":/")
     return await _proxy_worker_check(f"/algorithms/{algorithm_id}")
+
+
+async def publish_worker_model(request: Request):
+    """
+    Publie un modèle QGIS sur le worker.
+    Corps attendu : {"name": "<nom>", "model3": "<contenu XML du .model3>"}
+    """
+
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse(
+            {"message": "Request body must be valid JSON"},
+            status_code=400,
+        )
+
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("name"), str)
+        or not isinstance(payload.get("model3"), str)
+    ):
+        return JSONResponse(
+            {"message": "Body must be {\"name\": str, \"model3\": str}"},
+            status_code=400,
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{WORKER_URL}/models",
+                json={"name": payload["name"], "model3": payload["model3"]},
+            )
+    except httpx.HTTPError as e:
+        return JSONResponse(
+            {"message": f"Worker unreachable: {e}"},
+            status_code=502,
+        )
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {"message": response.text}
+
+    if isinstance(body, dict) and "detail" in body:
+        body = body["detail"]
+
+    return JSONResponse(body, status_code=response.status_code)
 
 
 # ----------------------------------------------------------------------
@@ -137,11 +188,22 @@ async def check_worker_algorithm(request: Request):
 routes = [
     Route("/", homepage),
     Route("/me", me),
-    # Vérifications côté worker QGIS
+    # Vérifications côté worker QGIS (déclaré avant le mount /oapi pour
+    # prendre le pas sur pygeoapi)
     Route(
-        "/worker/algorithms/{algorithm_id:path}",
+        "/oapi/worker/algorithms",
+        list_worker_algorithms,
+        methods=["GET"],
+    ),
+    Route(
+        "/oapi/worker/algorithms/{algorithm_id:path}",
         check_worker_algorithm,
         methods=["GET"],
+    ),
+    Route(
+        "/oapi/worker/models",
+        publish_worker_model,
+        methods=["POST"],
     ),
     # Scheduler
     Route(

@@ -73,13 +73,30 @@ Ce que ça change concrètement :
 
 ### Vérifier le contenu du worker
 
-`GET /worker/algorithms/{id}` interroge le worker QGIS : 200 si l'algorithme
+`GET /oapi/worker/algorithms/{id}` interroge le worker QGIS : 200 si l'algorithme
 est connu, 404 sinon. Les modèles `.model3` se vérifient avec leur
 identifiant `model:<nom>` :
 
+`GET /oapi/worker/algorithms` liste tous les algorithmes disponibles
+(id, nom, provider, groupe).
+
 ```bash
-curl 'http://localhost:8080/worker/algorithms/native:buffer' -H 'X-Forwarded-User: alice'
-curl 'http://localhost:8080/worker/algorithms/model:ma_procedure' -H 'X-Forwarded-User: alice'
+curl 'http://localhost:8080/oapi/worker/algorithms' -H 'X-Forwarded-User: alice'
+curl 'http://localhost:8080/oapi/worker/algorithms/native:buffer' -H 'X-Forwarded-User: alice'
+curl 'http://localhost:8080/oapi/worker/algorithms/model:ma_procedure' -H 'X-Forwarded-User: alice'
+```
+
+### Publier un modèle
+
+`POST /oapi/worker/models` dépose un modèle `.model3` dans le dossier des
+modèles du worker (écrase un modèle de même nom). Il est ensuite utilisable
+via l'identifiant `model:<name>`. Réponses : 201 (publié), 400 (nom ou XML
+invalide), 502 (worker injoignable).
+
+```bash
+curl -X POST 'http://localhost:8080/oapi/worker/models' \
+  -H 'X-Forwarded-User: alice' -H 'Content-Type: application/json' \
+  -d "$(jq -n --rawfile m ma_procedure.model3 '{name:"ma_procedure", model3:$m}')"
 ```
 
 ### Désactiver la gestion des utilisateurs

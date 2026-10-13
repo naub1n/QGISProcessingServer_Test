@@ -8,6 +8,8 @@ import sys
 import time
 import uuid
 import logging
+import re
+from xml.etree import ElementTree
 
 
 # WORKER_DEBUG=true : trace les inputs/outputs de tous les jobs.
@@ -17,6 +19,14 @@ DEBUG = os.environ.get("WORKER_DEBUG", "false").strip().lower() in (
 
 # Taille maximale (caractères) des inputs/outputs/stderr écrits dans les logs.
 LOG_MAX_CHARS = int(os.environ.get("WORKER_LOG_MAX_CHARS", "5000"))
+
+# Dossier des modèles du profil QGIS (volume monté dans docker-compose).
+MODELS_DIR = os.environ.get(
+    "QGIS_MODELS_DIR",
+    "/root/.local/share/QGIS/QGIS3/profiles/default/processing/models"
+)
+
+MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")
 
 # Logger dédié avec son propre handler : indépendant de la configuration
 # de logging d'uvicorn (qui ne configure pas le logger racine).
@@ -62,6 +72,11 @@ qgis_executor = ThreadPoolExecutor(max_workers=4)
 class JobRequest(BaseModel):
     algorithm: str
     inputs: dict
+
+
+class ModelRequest(BaseModel):
+    name: str
+    model3: str
 
 
 class QGISExecutionError(Exception):
@@ -189,6 +204,62 @@ def run_qgis_process(algorithm: str, inputs: dict, job_id: str = "-"):
     return result
 
 
+@app.get("/algorithms")
+def list_algorithms():
+    """
+    Liste tous les algorithmes (et modèles) connus du worker, via
+    `qgis_process list --json`.
+    """
+
+    try:
+        process = qgis_executor.submit(
+            subprocess.run,
+            ["qgis_process", "list", "--json"],
+            text=True,
+            capture_output=True
+        ).result()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e)}
+        ) from e
+
+    if process.returncode != 0:
+        logger.error("qgis_process list a échoué\n  stderr=%s",
+                     to_log(process.stderr))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "qgis_process list failed",
+                "stderr": process.stderr
+            }
+        )
+
+    try:
+        providers = json.loads(process.stdout).get("providers", {})
+    except ValueError as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"message": f"Invalid qgis_process output: {e}"}
+        ) from e
+
+    algorithms = []
+    for provider_id, provider in providers.items():
+        for algorithm_id, algorithm in provider.get("algorithms", {}).items():
+            algorithms.append({
+                "id": algorithm.get("id", algorithm_id),
+                "name": algorithm.get("name"),
+                "provider": provider_id,
+                "group": algorithm.get("group"),
+                "short_description": algorithm.get("short_description"),
+            })
+
+    return {
+        "algorithms": algorithms,
+        "count": len(algorithms)
+    }
+
+
 @app.get("/algorithms/{algorithm_id:path}")
 def check_algorithm(algorithm_id: str):
     """
@@ -221,6 +292,65 @@ def check_algorithm(algorithm_id: str):
     return {
         "algorithm": algorithm_id,
         "exists": True
+    }
+
+
+@app.post("/models", status_code=201)
+def publish_model(request: ModelRequest):
+    """
+    Publie un modèle QGIS (.model3) dans le dossier des modèles du profil.
+    Il devient disponible sous l'identifiant `model:<name>`.
+    """
+
+    if not MODEL_NAME_RE.match(request.name):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Invalid model name: use letters, digits, "
+                           "'_', '-' or '.' only (max 100 characters)"
+            }
+        )
+
+    try:
+        root = ElementTree.fromstring(request.model3)
+    except ElementTree.ParseError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": f"Invalid model3 XML: {e}"}
+        ) from e
+
+    if root.tag != "Option":
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid model3 content: root element "
+                               "must be <Option>"}
+        )
+
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    path = os.path.join(MODELS_DIR, f"{request.name}.model3")
+    existed = os.path.exists(path)
+
+    # Écriture atomique pour ne jamais exposer un modèle tronqué
+    tmp_path = f"{path}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(request.model3)
+        os.replace(tmp_path, path)
+    except OSError as e:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise HTTPException(
+            status_code=500,
+            detail={"message": f"Unable to write model: {e}"}
+        ) from e
+
+    logger.info("Modèle %s %s", request.name,
+                "remplacé" if existed else "publié")
+
+    return {
+        "name": request.name,
+        "algorithm": f"model:{request.name}",
+        "replaced": existed
     }
 
 
