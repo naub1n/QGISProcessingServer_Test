@@ -75,7 +75,7 @@ Ce que ça change concrètement :
 
 `GET /oapi/worker/algorithms/{id}` interroge le worker QGIS : 200 si l'algorithme
 est connu, 404 sinon. Les modèles `.model3` se vérifient avec leur
-identifiant `model:<nom>` :
+identifiant `model:<nom>`.
 
 `GET /oapi/worker/algorithms` liste tous les algorithmes disponibles
 (id, nom, provider, groupe).
