@@ -19,6 +19,7 @@ from auth import (
     get_user,
     is_admin,
 )
+from restart import DrainMiddleware, RestartManager
 from scheduler.scheduler import Scheduler
 from scheduler.routes import (
     list_schedules,
@@ -36,6 +37,10 @@ from scheduler.routes import (
 # ----------------------------------------------------------------------
 
 scheduler = Scheduler()
+
+# Redémarrage quotidien si des modèles/scripts ont changé (désactivé sans
+# QGIS_RESTART_CRON), cf. restart.py.
+restart_manager = RestartManager.from_env()
 
 
 # ----------------------------------------------------------------------
@@ -62,9 +67,11 @@ async def lifespan(app: Starlette):
     app.state.scheduler = scheduler
 
     scheduler.start()
+    restart_manager.start()
 
     yield
 
+    restart_manager.shutdown()
     scheduler.shutdown()
 
 
@@ -202,7 +209,10 @@ app = Starlette(
     debug=True,
     routes=routes,
     lifespan=lifespan,
-    middleware=[Middleware(ForwardedUserMiddleware)],
+    middleware=[
+        Middleware(ForwardedUserMiddleware),
+        Middleware(DrainMiddleware),
+    ],
 )
 
 # ----------------------------------------------------------------------

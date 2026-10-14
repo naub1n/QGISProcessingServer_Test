@@ -15,8 +15,21 @@ services:
       # `qgis_process help` au premier démarrage (~secondes), d'où une liste
       # restreinte ; "native:*,model:*,script:*" publie tout (cf. README).
       QGIS_PUBLISHED_ALGORITHMS: "native:buffer,native:reprojectlayer,model:*,script:*"
+      # Redémarrage planifié pour prendre en compte les modèles/scripts
+      # ajoutés, modifiés ou supprimés : expression cron (5 champs). À cette
+      # heure, l'application ne redémarre que si quelque chose a changé ;
+      # sans cette variable, jamais de redémarrage automatique.
+      # QGIS_RESTART_CRON: "0 3 * * *"
+      # QGIS_RESTART_TIMEZONE: "Europe/Paris"
+      # Attente maximale (secondes) des jobs en cours avant de les annuler
+      # (motif : redémarrage). Défaut : 1800.
+      # QGIS_RESTART_DRAIN_TIMEOUT: "1800"
       # ADMIN_USERS: "alice,bob"
       # ADMIN_GROUPS: "admins"
+    volumes:
+      # Jobs pygeoapi (jobs.db), cache des descriptions d'algorithmes et
+      # planifications (schedules.json) : conservés si le conteneur est recréé.
+      - ./api/data:/data
 #    labels:
 #      traefik.enable: true
 #      traefik.http.routers.r_pygeoapi.rule: Host(`ogcapi.exemple.com`)

@@ -14,18 +14,25 @@ de pygeoapi.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import httpx
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 
 logger = logging.getLogger(__name__)
+
+# Fichier où sont conservées les planifications (survivent aux redémarrages
+# de l'application). Vide : planifications en mémoire uniquement.
+SCHEDULES_PATH = os.environ.get("SCHEDULES_PATH", "/data/schedules.json")
 
 
 @dataclass
@@ -59,18 +66,20 @@ class Scheduler:
     l'application ne dépende pas directement de son API.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, storage_path: str | None = SCHEDULES_PATH) -> None:
         self._scheduler = BackgroundScheduler()
         self._schedules: dict[str, Schedule] = {}
+        self._storage_path = storage_path or None
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Démarre le scheduler."""
+        """Démarre le scheduler (après rechargement des tâches enregistrées)."""
 
         if not self._scheduler.running:
+            self._load()
             logger.info("Starting scheduler")
             self._scheduler.start()
 
@@ -115,6 +124,8 @@ class Scheduler:
         if schedule.enabled:
             self._register_job(schedule)
 
+        self._save()
+
         logger.info(
             "Schedule '%s' added for process '%s'",
             schedule.id,
@@ -129,8 +140,14 @@ class Scheduler:
                 f"Schedule '{schedule_id}' does not exist"
             )
 
-        self._scheduler.remove_job(schedule_id)
+        try:
+            self._scheduler.remove_job(schedule_id)
+        except JobLookupError:
+            # Tâche désactivée : aucun job APScheduler à retirer.
+            pass
+
         del self._schedules[schedule_id]
+        self._save()
 
         logger.info("Schedule '%s' removed", schedule_id)
 
@@ -144,6 +161,7 @@ class Scheduler:
 
         schedule.enabled = True
         self._register_job(schedule)
+        self._save()
 
         logger.info("Schedule '%s' enabled", schedule_id)
 
@@ -163,6 +181,8 @@ class Scheduler:
             # Le job peut ne pas exister si le scheduler vient
             # d'être démarré ou si la tâche n'a jamais été activée.
             pass
+
+        self._save()
 
         logger.info("Schedule '%s' disabled", schedule_id)
 
@@ -204,6 +224,82 @@ class Scheduler:
         )
 
         self._execute_schedule(schedule)
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def _save(self) -> None:
+        """
+        Écrit toutes les tâches dans le fichier de stockage (écriture
+        atomique). Une erreur est journalisée sans faire échouer l'appel :
+        la tâche reste active, mais ne survivrait pas à un redémarrage.
+        """
+
+        if not self._storage_path:
+            return
+
+        tmp_path = f"{self._storage_path}.tmp"
+
+        try:
+            os.makedirs(os.path.dirname(self._storage_path) or ".", exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    [asdict(s) for s in self._schedules.values()],
+                    f,
+                    indent=2,
+                )
+            os.replace(tmp_path, self._storage_path)
+        except (OSError, TypeError, ValueError):
+            logger.exception(
+                "Schedules not saved to %s", self._storage_path
+            )
+
+    def _load(self) -> None:
+        """
+        Recharge les tâches enregistrées et réarme celles qui sont actives.
+
+        Les exécutions qui tombaient pendant l'arrêt ne sont pas rattrapées.
+        Une tâche illisible ou invalide est ignorée (et journalisée).
+        """
+
+        if not self._storage_path:
+            return
+
+        try:
+            with open(self._storage_path, encoding="utf-8") as f:
+                entries = json.load(f)
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            logger.exception(
+                "Schedules file %s unreadable, starting empty",
+                self._storage_path,
+            )
+            return
+
+        for entry in entries:
+            try:
+                schedule = Schedule(**entry)
+
+                if schedule.id in self._schedules:
+                    continue
+
+                # Valide le trigger avant d'adopter la tâche.
+                self._create_trigger(schedule)
+
+                self._schedules[schedule.id] = schedule
+
+                if schedule.enabled:
+                    self._register_job(schedule)
+            except Exception:
+                logger.exception("Schedule ignored (invalid entry): %r", entry)
+
+        logger.info(
+            "%d schedule(s) restored from %s",
+            len(self._schedules),
+            self._storage_path,
+        )
 
     # ------------------------------------------------------------------
     # Internal
@@ -285,7 +381,11 @@ class Scheduler:
             "inputs": inputs
         }
 
-        headers = {}
+        # Exécution asynchrone : pygeoapi répond tout de suite 201 avec
+        # l'URL du job dans `Location`. En synchrone il ne renvoie que les
+        # sorties brutes de l'algorithme (parfois `{}`), sans identifiant de
+        # job, et l'appel est borné par le timeout ci-dessous.
+        headers = {"Prefer": "respond-async"}
         if owner:
             # Le manager pygeoapi (UserTinyDBManager) associe le job à
             # l'utilisateur porté par ce header, comme pour un appel
@@ -311,19 +411,23 @@ class Scheduler:
 
         response.raise_for_status()
 
-        result = response.json()
+        # Identifiant du job : dernier segment de l'URL `Location`
+        # (.../jobs/<id>), à défaut `jobID` dans le corps.
+        job_id = response.headers.get("Location", "").rstrip("/").rsplit("/", 1)[-1]
 
-        logger.info(
-            "pygeoapi response: %s",
-            result,
-        )
+        if not job_id:
+            try:
+                result = response.json()
+            except ValueError:
+                result = {}
 
-        # Pour un async-execute, pygeoapi devrait retourner un job.
-        job_id = result.get("jobID") or result.get("job_id")
+            if isinstance(result, dict):
+                job_id = result.get("jobID") or result.get("job_id")
 
         if not job_id:
             raise RuntimeError(
-                f"pygeoapi did not return a job id: {result}"
+                f"pygeoapi did not return a job id "
+                f"(HTTP {response.status_code}, headers {dict(response.headers)})"
             )
 
         return job_id
@@ -352,7 +456,7 @@ if __name__ == "__main__":
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    scheduler = Scheduler()
+    scheduler = Scheduler(storage_path=None)
 
     scheduler.add_schedule(
         Schedule(

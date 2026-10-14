@@ -92,9 +92,9 @@ curl 'http://localhost:8080/oapi/processes/model:ma_procedure' -H 'X-Forwarded-U
 
 `POST /oapi/worker/models` dépose un modèle `.model3` dans le dossier des
 modèles du worker (écrase un modèle de même nom). Il est ensuite utilisable
-via l'identifiant `model:<name>` ; il apparaît dans `/oapi/processes` après un
-redémarrage du conteneur `pygeoapi`. Réponses : 201 (publié), 400 (nom ou XML
-invalide), 502 (worker injoignable).
+via l'identifiant `model:<name>` ; il apparaît dans `/oapi/processes` après le
+prochain redémarrage de l'application (cf. « Redémarrage planifié » plus bas).
+Réponses : 201 (publié), 400 (nom ou XML invalide), 502 (worker injoignable).
 
 ```bash
 curl -X POST 'http://localhost:8080/oapi/worker/models' \
@@ -123,6 +123,7 @@ renvoie les clés de la requête d'exécution OGC (`inputs`, `outputs`, `respons
 `subscriber`, `null` si absentes ; `response` vaut `raw` par défaut). Les jobs
 créés avant cette fonctionnalité renvoient des `null`.
 
+Les jobs lancés par une planification sont exécutés en asynchrone (`Prefer: respond-async`).
 `scheduleID` indique la planification à l'origine du job (`null` pour un job
 lancé manuellement).
 
@@ -160,10 +161,49 @@ curl 'http://localhost:8080/oapi/jobs/<jobID>' -H 'X-Forwarded-User: alice'
 - Les identifiants des modèles viennent de leur nom interne : évitez espaces et
   accents (`model:Importer un référentiel`), qui donnent des URL fragiles.
 - Les algorithmes ajoutés après le démarrage (nouveau modèle publié) n'apparaissent
-  qu'après un redémarrage du conteneur `pygeoapi`.
+  qu'après un redémarrage de l'application, automatique si `QGIS_RESTART_CRON` est
+  défini (cf. ci-dessous).
 - Les sorties fichiers (`OUTPUT`) sont des chemins **dans le worker** : le résultat
   ne contient pas encore le fichier lui-même.
 - L'ancien process générique `qgis` (`{"algorithm", "parameters"}`) reste disponible.
+
+### Redémarrage planifié (prise en compte des modèles et scripts)
+
+La liste des process est générée au démarrage : un modèle ou un script ajouté,
+modifié ou supprimé n'est pris en compte qu'après un redémarrage. Avec
+`QGIS_RESTART_CRON` (expression cron à 5 champs, ex. `0 3 * * *`), l'application
+vérifie chaque jour à cette heure si les fichiers de modèles/scripts du worker ont
+changé depuis la dernière génération de config, et ne redémarre que si c'est le cas.
+**Sans cette variable, aucun redémarrage automatique.**
+
+| Variable | Rôle |
+|---|---|
+| `QGIS_RESTART_CRON` | heure de la vérification (cron, 5 champs) ; absente = désactivé |
+| `QGIS_RESTART_TIMEZONE` | fuseau de cette heure (ex. `Europe/Paris`), défaut : fuseau du conteneur |
+| `QGIS_RESTART_DRAIN_TIMEOUT` | attente maximale des jobs en cours, en secondes (défaut `1800`) |
+
+Déroulement quand un changement est détecté :
+
+1. les nouvelles exécutions (`POST /oapi/processes/{id}/execution`, donc aussi celles
+   des planifications) sont refusées avec un **503** (`Retry-After`) ;
+2. l'application attend la fin des jobs en cours, au plus 30 minutes par défaut ;
+3. les jobs encore actifs passent en `failed` avec le message
+   `Interrupted by application restart` (le calcul peut se terminer côté worker, son
+   résultat est perdu) ;
+4. `entrypoint.sh` relance uvicorn dans le **même conteneur** (config pygeoapi et
+   OpenAPI régénérées, cache des descriptions réutilisé). Si la régénération échoue
+   (worker injoignable), la configuration précédente est conservée.
+
+Pendant le redémarrage (de quelques secondes à plusieurs minutes si des modèles ont
+changé), l'API est indisponible : choisir une heure creuse.
+
+### Persistance des planifications
+
+Les planifications sont enregistrées dans `/data/schedules.json`
+(`SCHEDULES_PATH`, vide = en mémoire seulement) et rechargées au démarrage ; le
+dossier `/data` du conteneur `pygeoapi` est monté sur `./api/data` (jobs, cache,
+planifications). Une exécution qui tombait pendant un redémarrage est sautée, pas
+rattrapée ; une planification `interval` repart de zéro.
 
 ### Désactiver la gestion des utilisateurs
 
