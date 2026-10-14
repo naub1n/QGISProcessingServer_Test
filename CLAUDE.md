@@ -39,13 +39,22 @@ This is a two-container system that exposes a [pygeoapi](https://pygeoapi.io/) O
 
 ### Worker introspection and model publishing
 
-`app.py` also proxies three routes to the worker, via `httpx` to `WORKER_URL` (502 if the worker is unreachable; FastAPI's `{"detail": ...}` error wrapper is unwrapped):
+`app.py` also proxies a route to the worker, via `httpx` to `WORKER_URL` (502 if the worker is unreachable; FastAPI's `{"detail": ...}` error wrapper is unwrapped):
 
-- `GET /oapi/worker/algorithms` → worker `GET /algorithms` (lists everything from `qgis_process list --json`).
-- `GET /oapi/worker/algorithms/{id}` → worker `GET /algorithms/{id}` (200/404; models use `model:<name>`).
 - `POST /oapi/worker/models` with `{"name", "model3"}` → worker `POST /models`, which validates the name (`MODEL_NAME_RE`) and that the XML root is `<Option>`, then atomically writes `<name>.model3` into `MODELS_DIR` (the `./worker/processing/models` volume), overwriting any existing model. Usable afterwards as `model:<name>`.
 
-These routes are declared **before** the `/oapi` mount in `routes` so they take precedence over pygeoapi; moving them after the mount would silently route them to pygeoapi (404). In the worker, `GET /algorithms` must stay declared before `/algorithms/{algorithm_id:path}`.
+This route is declared **before** the `/oapi` mount in `routes` so it takes precedence over pygeoapi; moving it after the mount would silently route them to pygeoapi (404). Algorithm listing/lookup is no longer proxied: use `/oapi/processes[/{id}]` (published algorithms only). The worker's own `GET /algorithms` and `GET /algorithms/{id}[?details=true]` remain, used by `generate_config.py`; `GET /algorithms` must stay declared before `/algorithms/{algorithm_id:path}`.
+
+### One OGC process per QGIS algorithm (generated config)
+
+`api/entrypoint.sh` runs `api/qgis_processing_api/generate_config.py` before `pygeoapi openapi generate`, then points `PYGEOAPI_CONFIG` at the generated file (`/tmp/pygeoapi.generated.yml`; `pygeoapi.yml` stays the base template, still holding the legacy generic `qgis` resource). The generator waits for the worker, lists algorithms (`GET /algorithms`), keeps those matching `QGIS_PUBLISHED_ALGORITHMS` (fnmatch patterns), fetches `GET /algorithms/{id}?details=true` (= `qgis_process help --json`) and adds one `type: process` resource per algorithm, keyed by id (`native:buffer`). Each resource's `processor` embeds the algorithm id, `worker_url` and the full OGC `metadata`, so `QGISAlgorithmProcessor` (`pygeoapi/plugins/qgis_algorithm.py`) needs no network at load time.
+
+- `build_process_metadata()` in that plugin is the only place mapping QGIS parameter types → JSON Schema; unknown types fall back to `{}` rather than blocking the algorithm. Do not put `contentMediaType` in output schemas: pygeoapi's OpenAPI generation uses the first output's one as the whole response media type.
+- `qgis_process run` fills omitted parameters with defaults but rejects omitted mandatory ones (e.g. destination `OUTPUT`), hence `minOccurs: 1` only when neither optional nor defaulted.
+- Help descriptions are cached in `/data/qgis_processes_cache.json` (not volume-mounted) as `{"algorithms": {id: help}, "sources": {provider: state}}`; only ids missing from the cache are fetched. For `model`/`script`, the worker's `GET /algorithms` returns `sources` (newest mtime + file count of the `.model3`/`.py` files); a provider whose state differs from the cached one is refetched entirely. **Known limit of this POC**: invalidation is per provider, not per algorithm, so one changed model/script refetches all models/scripts (slow with many of them). Per-algorithm invalidation needs an algorithm→file mapping: model ids don't necessarily match file names, but `QgsProcessingModelAlgorithm.sourceFilePath()` gives a model's file (and so its mtime); no known equivalent for scripts yet. Better lever (not available today, would need an upstream/patched `qgis_process`): a `qgis_process --json help all` returning every algorithm's description in one QGIS startup, which would make this whole per-algorithm caching largely unnecessary. The state is only saved if all that provider's fetches succeeded. New models only show up after an `pygeoapi` container restart.
+- `/oapi/processes` pagination comes from `server.limits` in `pygeoapi.yml` (`default_items`/`max_items`, set to 1500 so every published algorithm is listed). pygeoapi 0.24's `list_processes` is just `list(processes)[:limit]`: no `offset`, no `next` link, and missing `limits` falls back to 10/10 (so removing the block caps the list at 10 and `?limit=` can't go above). The same limits apply to `/oapi/jobs`.
+- Process ids come from QGIS algorithm ids; model ids use the model's internal name, so names with spaces/accents give awkward URLs.
+- Execution passes `data` (the OGC `inputs`) straight to the worker and returns only qgis_process's `results`.
 
 ### Scheduler
 

@@ -26,7 +26,13 @@ MODELS_DIR = os.environ.get(
     "/root/.local/share/QGIS/QGIS3/profiles/default/processing/models"
 )
 
-MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")
+# Dossier des scripts du profil QGIS (voisin du dossier des modèles).
+SCRIPTS_DIR = os.environ.get(
+    "QGIS_SCRIPTS_DIR",
+    os.path.join(os.path.dirname(MODELS_DIR.rstrip("/\\")), "scripts")
+)
+
+MODEL_NAME_RE =re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")
 
 # Logger dédié avec son propre handler : indépendant de la configuration
 # de logging d'uvicorn (qui ne configure pas le logger racine).
@@ -204,11 +210,38 @@ def run_qgis_process(algorithm: str, inputs: dict, job_id: str = "-"):
     return result
 
 
+def source_files_state(directory: str, extension: str) -> dict:
+    """
+    Date de dernière modification (la plus récente) et nombre des fichiers
+    `extension` d'un dossier. Permet de savoir si les modèles ou scripts ont
+    changé sans relire chaque algorithme (un fichier supprimé change `count`).
+    """
+
+    modified = 0.0
+    count = 0
+
+    for root, _dirs, files in os.walk(directory):
+        for name in files:
+            if not name.endswith(extension):
+                continue
+            try:
+                modified = max(modified,
+                               os.path.getmtime(os.path.join(root, name)))
+            except OSError:
+                continue
+            count += 1
+
+    return {"modified": modified, "count": count}
+
+
 @app.get("/algorithms")
 def list_algorithms():
     """
     Liste tous les algorithmes (et modèles) connus du worker, via
     `qgis_process list --json`.
+
+    `sources` donne l'état des fichiers des providers `model` et `script`
+    (dernière modification, nombre de fichiers).
     """
 
     try:
@@ -256,15 +289,23 @@ def list_algorithms():
 
     return {
         "algorithms": algorithms,
-        "count": len(algorithms)
+        "count": len(algorithms),
+        "sources": {
+            "model": source_files_state(MODELS_DIR, ".model3"),
+            "script": source_files_state(SCRIPTS_DIR, ".py"),
+        }
     }
 
 
 @app.get("/algorithms/{algorithm_id:path}")
-def check_algorithm(algorithm_id: str):
+def check_algorithm(algorithm_id: str, details: bool = False):
     """
     Vérifie que le worker connaît l'algorithme QGIS (ex. native:buffer,
     model:mon_modele). 200 si présent, 404 sinon.
+
+    Avec `?details=true`, ajoute la clé `help` : la sortie JSON de
+    `qgis_process help` (algorithm_details, parameters, outputs), utilisée
+    pour décrire l'algorithme sous forme de process OGC.
     """
 
     try:
@@ -289,10 +330,27 @@ def check_algorithm(algorithm_id: str):
             }
         )
 
-    return {
+    response = {
         "algorithm": algorithm_id,
         "exists": True
     }
+
+    if details:
+        try:
+            help_json = json.loads(process.stdout)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=500,
+                detail={"message": f"Invalid qgis_process output: {e}"}
+            ) from e
+
+        # On écarte les versions de QGIS/GDAL/... et le détail du provider.
+        response["help"] = {
+            key: help_json.get(key)
+            for key in ("algorithm_details", "parameters", "outputs")
+        }
+
+    return response
 
 
 @app.post("/models", status_code=201)

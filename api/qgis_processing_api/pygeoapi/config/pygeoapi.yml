@@ -13,8 +13,8 @@ server:
     - fr-FR
 
   limits:
-    default_items: 10
-    max_items: 1000
+    default_items: 1500
+    max_items: 1500
 
   manager:
     name: user_tinydb_manager.UserTinyDBManager

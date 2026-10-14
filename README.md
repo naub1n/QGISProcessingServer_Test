@@ -73,24 +73,23 @@ Ce que ça change concrètement :
 
 ### Vérifier le contenu du worker
 
-`GET /oapi/worker/algorithms/{id}` interroge le worker QGIS : 200 si l'algorithme
-est connu, 404 sinon. Les modèles `.model3` se vérifient avec leur
-identifiant `model:<nom>`.
-
-`GET /oapi/worker/algorithms` liste tous les algorithmes disponibles
-(id, nom, provider, groupe).
+Les algorithmes disponibles se consultent via l'API OGC Processes (voir
+« Un process OGC par algorithme » plus bas) : `GET /oapi/processes` les liste et
+`GET /oapi/processes/{id}` (404 si inconnu) donne leur description détaillée. Seuls les
+algorithmes publiés (`QGIS_PUBLISHED_ALGORITHMS`) y figurent.
 
 ```bash
-curl 'http://localhost:8080/oapi/worker/algorithms' -H 'X-Forwarded-User: alice'
-curl 'http://localhost:8080/oapi/worker/algorithms/native:buffer' -H 'X-Forwarded-User: alice'
-curl 'http://localhost:8080/oapi/worker/algorithms/model:ma_procedure' -H 'X-Forwarded-User: alice'
+curl 'http://localhost:8080/oapi/processes' -H 'X-Forwarded-User: alice'
+curl 'http://localhost:8080/oapi/processes/native:buffer' -H 'X-Forwarded-User: alice'
+curl 'http://localhost:8080/oapi/processes/model:ma_procedure' -H 'X-Forwarded-User: alice'
 ```
 
 ### Publier un modèle
 
 `POST /oapi/worker/models` dépose un modèle `.model3` dans le dossier des
 modèles du worker (écrase un modèle de même nom). Il est ensuite utilisable
-via l'identifiant `model:<name>`. Réponses : 201 (publié), 400 (nom ou XML
+via l'identifiant `model:<name>` ; il apparaît dans `/oapi/processes` après un
+redémarrage du conteneur `pygeoapi`. Réponses : 201 (publié), 400 (nom ou XML
 invalide), 502 (worker injoignable).
 
 ```bash
@@ -98,6 +97,57 @@ curl -X POST 'http://localhost:8080/oapi/worker/models' \
   -H 'X-Forwarded-User: alice' -H 'Content-Type: application/json' \
   -d "$(jq -n --rawfile m ma_procedure.model3 '{name:"ma_procedure", model3:$m}')"
 ```
+
+### Un process OGC par algorithme (prototype)
+
+Au démarrage, l'API interroge le worker et publie chaque algorithme comme un
+process OGC : `/oapi/processes/native:buffer`, `/oapi/processes/model:ma_procedure`...
+Les `inputs` et `outputs` (types, valeurs par défaut, énumérations, bornes,
+obligatoire/optionnel) sont déduits de `qgis_process help --json` : rien n'est
+écrit en dur par algorithme, un nouveau script ou modèle est décrit
+automatiquement.
+
+```bash
+curl 'http://localhost:8080/oapi/processes/native:buffer'
+curl -X POST 'http://localhost:8080/oapi/processes/native:buffer/execution' \
+  -H 'X-Forwarded-User: alice' -H 'Content-Type: application/json' \
+  -d '{"inputs": {"INPUT": "/data/communes.gpkg", "DISTANCE": 100, "OUTPUT": "/data/buffer.gpkg"}}'
+```
+
+- `QGIS_PUBLISHED_ALGORITHMS` (docker-compose) : motifs `fnmatch` séparés par des
+  virgules (défaut `native:*,model:*,script:*`). Chaque algorithme coûte un
+  `qgis_process help` (quelques secondes) à la première génération.
+- Les descriptions sont mises en cache dans `/data/qgis_processes_cache.json`
+  (`QGIS_PROCESS_REFRESH=true` pour l'ignorer) : seuls les algorithmes absents du
+  cache sont demandés au worker. Pour les modèles et scripts, le cache retient aussi
+  la date de dernière modification de leurs fichiers (donnée par le worker dans
+  `GET /algorithms`, clé `sources`) ; si elle change, ils sont relus.
+- **Limite identifiée de ce POC** : cette détection se fait par provider (`model`,
+  `script`), pas par algorithme. Dès qu'un seul modèle ou script est ajouté,
+  modifié ou supprimé, *tous* les modèles (ou tous les scripts) sont relus avec
+  `qgis_process help`, ce qui peut devenir long avec de nombreux modèles et scripts
+  en entreprise. Piste : pour les modèles, `QgsProcessingModelAlgorithm.sourceFilePath()`
+  donne le fichier de chaque algorithme, donc sa date de modification ; il n'existe
+  pas d'équivalent connu pour les scripts, à étudier.
+- **Piste d'amélioration** : faire évoluer `qgis_process` lui-même pour qu'il renvoie
+  la description de tous les algorithmes en un seul appel (par exemple
+  `qgis_process --json help all`, au même format que `help <algorithme>`). Un seul
+  démarrage de QGIS (~4 s) remplacerait les ~4 s par algorithme actuels, pour les
+  algorithmes natifs comme pour les modèles et scripts, sans reconstruire la
+  description côté API. Cela suppose une contribution à QGIS (ou un `qgis_process`
+  patché dans l'image du worker) : cette commande n'existe pas aujourd'hui.
+- `GET /oapi/processes` est paginé par `server.limits` dans `pygeoapi.yml`
+  (`default_items` / `max_items`, ici 1500). pygeoapi 0.24 n'a ni `offset` ni lien
+  `next` : au-delà de `max_items` des process sont inaccessibles dans la liste, et
+  supprimer le bloc `limits` ramènerait la liste à 10 process. Ces limites valent
+  aussi pour `/oapi/jobs`.
+- Les identifiants des modèles viennent de leur nom interne : évitez espaces et
+  accents (`model:Importer un référentiel`), qui donnent des URL fragiles.
+- Les algorithmes ajoutés après le démarrage (nouveau modèle publié) n'apparaissent
+  qu'après un redémarrage du conteneur `pygeoapi`.
+- Les sorties fichiers (`OUTPUT`) sont des chemins **dans le worker** : le résultat
+  ne contient pas encore le fichier lui-même.
+- L'ancien process générique `qgis` (`{"algorithm", "parameters"}`) reste disponible.
 
 ### Désactiver la gestion des utilisateurs
 

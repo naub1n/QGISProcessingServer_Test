@@ -10,6 +10,11 @@ services:
       # injectés par Traefik). Passer à "false" pour désactiver
       # entièrement l'authentification (pas de 401, owner vide partout).
       AUTH_ENABLED: "true"
+      # Algorithmes publiés comme process OGC (/processes/native:buffer...),
+      # motifs fnmatch séparés par des virgules. Chaque algorithme coûte un
+      # `qgis_process help` au premier démarrage (~secondes), d'où une liste
+      # restreinte ; "native:*,model:*,script:*" publie tout (cf. README).
+      QGIS_PUBLISHED_ALGORITHMS: "native:buffer,native:reprojectlayer,model:*,script:*"
       # ADMIN_USERS: "alice,bob"
       # ADMIN_GROUPS: "admins"
 #    labels:
@@ -21,6 +26,9 @@ services:
 #      traefik.http.services.s_ogc_api.loadbalancer.server.port: 8000
 #      traefik.http.routers.r_ogc_api.service: s_ogc_api
 #      traefik.http.routers.r_ogc_api.middlewares: oidc-base@file
+
+    depends_on:
+      - qgis-worker
 
   qgis-worker:
     build: ./worker
