@@ -114,6 +114,15 @@ curl -X POST 'http://localhost:8080/oapi/processes/native:buffer/execution' \
   -d '{"inputs": {"INPUT": "/data/communes.gpkg", "DISTANCE": 100, "OUTPUT": "/data/buffer.gpkg"}}'
 ```
 
+Les paramètres envoyés au démarrage d'un job sont conservés : `GET /oapi/jobs/{id}`
+renvoie les clés de la requête d'exécution OGC (`inputs`, `outputs`, `response`,
+`subscriber`, `null` si absentes ; `response` vaut `raw` par défaut). Les jobs
+créés avant cette fonctionnalité renvoient des `null`.
+
+```bash
+curl 'http://localhost:8080/oapi/jobs/<jobID>' -H 'X-Forwarded-User: alice'
+```
+
 - `QGIS_PUBLISHED_ALGORITHMS` (docker-compose) : motifs `fnmatch` séparés par des
   virgules (défaut `native:*,model:*,script:*`). Chaque algorithme coûte un
   `qgis_process help` (quelques secondes) à la première génération.
@@ -202,9 +211,9 @@ dans `pygeoapi.yml` ; décommenter la dépendance correspondante dans
 [requirements.txt](api/requirements.txt) avant de les utiliser.
 
 Pour PostgreSQL, la table `jobs` créée par pygeoapi n'a pas nativement de
-colonne `owner` : `UserPostgreSQLManager` l'ajoute automatiquement au
-démarrage (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS owner`), que la
-table soit nouvelle ou déjà existante.
+colonnes `owner` et `parameters` : `UserPostgreSQLManager` les ajoute
+automatiquement au démarrage (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`), que
+la table soit nouvelle ou déjà existante.
 
 ⚠️ `MongoDBManager.delete_job()` et `.get_job_result()` ne passent pas par
 `get_job()` dans pygeoapi (contrairement à TinyDB/PostgreSQL) : le plugin

@@ -24,11 +24,12 @@ from pygeoapi.process.manager.tinydb_ import TinyDBManager
 from pygeoapi.util import JobStatus
 
 from auth import can_access_job, current_is_admin_var, current_user_var
+from job_parameters import JobParametersMixin
 
 LOGGER = logging.getLogger(__name__)
 
 
-class UserTinyDBManager(TinyDBManager):
+class UserTinyDBManager(JobParametersMixin, TinyDBManager):
     """TinyDBManager filtrant les jobs par utilisateur propriétaire."""
 
     def add_job(self, job_metadata: dict) -> str:

@@ -22,6 +22,7 @@ import logging
 from sqlalchemy import (
     Column,
     DateTime,
+    JSON,
     Integer,
     LargeBinary,
     String,
@@ -36,6 +37,7 @@ from pygeoapi.process.manager.postgresql import PostgreSQLManager
 from pygeoapi.util import JobStatus
 
 from auth import can_access_job, current_is_admin_var, current_user_var
+from job_parameters import JobParametersMixin
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,7 +46,8 @@ LOGGER = logging.getLogger(__name__)
 def get_user_table_model(
     db_search_path: tuple[str], engine: Engine, table_output: bool
 ) -> Table:
-    """Même modèle que PostgreSQLManager, avec une colonne "owner" en plus."""
+    """Même modèle que PostgreSQLManager, avec les colonnes "owner" et
+    "parameters" (paramètres d'exécution, JSON) en plus."""
 
     Base = declarative_base()
     schema = db_search_path[0]
@@ -70,6 +73,7 @@ def get_user_table_model(
         Column("message", String),
         Column("progress", Integer, nullable=False),
         Column("owner", String),
+        Column("parameters", JSON),
         schema=schema,
     )
 
@@ -79,20 +83,22 @@ def get_user_table_model(
     Base.metadata.create_all(engine, tables=[jobs], checkfirst=True)
 
     # create_all(checkfirst=True) ne migre pas une table déjà existante :
-    # si "jobs" a été créée par PostgreSQLManager avant ce plugin, la
-    # colonne "owner" est ajoutée explicitement ici (no-op sinon).
+    # si "jobs" a été créée par PostgreSQLManager avant ce plugin, les
+    # colonnes "owner" et "parameters" sont ajoutées explicitement ici
+    # (no-op sinon).
     with engine.begin() as conn:
         conn.execute(
             text(
                 f'ALTER TABLE "{schema}".jobs '
-                f"ADD COLUMN IF NOT EXISTS owner VARCHAR"
+                f"ADD COLUMN IF NOT EXISTS owner VARCHAR, "
+                f"ADD COLUMN IF NOT EXISTS parameters JSON"
             )
         )
 
     return jobs
 
 
-class UserPostgreSQLManager(PostgreSQLManager):
+class UserPostgreSQLManager(JobParametersMixin, PostgreSQLManager):
     """PostgreSQLManager filtrant les jobs par utilisateur propriétaire."""
 
     def __init__(self, manager_def: dict):

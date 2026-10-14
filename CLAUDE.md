@@ -77,6 +77,8 @@ The API trusts `X-Forwarded-User` / `X-User-Groups` headers injected by a Traefi
 
 Note: `MongoDBManager.delete_job()`/`.get_job_result()` don't call `self.get_job()` internally (unlike the TinyDB/PostgreSQL managers), so `UserMongoDBManager` has to override them explicitly to apply the ownership check — the other two managers get it "for free" through polymorphism.
 
+Job parameters: pygeoapi doesn't store what the client sent when starting a job. `pygeoapi/plugins/job_parameters.py` provides `JobParametersMixin` (first base of all three managers): its `execute_process()` captures `inputs`/`outputs`/`response`/`subscriber` in a `ContextVar` and `add_job()` saves them under the job's `parameters` key (PostgreSQL has a `parameters JSON` column, added by `ALTER TABLE` on existing tables). Importing the module also **monkeypatches `pygeoapi.api.processes.get_jobs`**: in the JSON `/oapi/jobs[/{id}]` output, `parameters` is replaced by top-level `inputs`, `outputs`, `response`, `subscriber` (null when absent; the HTML rendering is untouched). Jobs created before this change simply return nulls. Written against pygeoapi 0.24.0's `BaseManager.execute_process` signature — recheck on upgrade.
+
 ### PYTHONPATH
 
 `docker-compose.yml` sets `PYTHONPATH=/qgis_processing_api:/qgis_processing_api/pygeoapi/plugins`. Both entries matter:

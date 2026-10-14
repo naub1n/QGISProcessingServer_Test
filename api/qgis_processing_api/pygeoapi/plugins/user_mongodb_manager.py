@@ -25,11 +25,12 @@ from pygeoapi.process.base import JobNotFoundError
 from pygeoapi.process.manager.mongodb_ import MongoDBManager
 
 from auth import can_access_job, current_is_admin_var, current_user_var
+from job_parameters import JobParametersMixin
 
 LOGGER = logging.getLogger(__name__)
 
 
-class UserMongoDBManager(MongoDBManager):
+class UserMongoDBManager(JobParametersMixin, MongoDBManager):
     """MongoDBManager filtrant les jobs par utilisateur propriétaire."""
 
     def add_job(self, job_metadata: dict):
