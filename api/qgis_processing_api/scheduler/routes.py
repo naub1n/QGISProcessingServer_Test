@@ -6,9 +6,12 @@ from starlette.responses import JSONResponse
 from auth import get_user, is_admin
 
 
-def schedule_to_dict(schedule):
-    """Convertit un Schedule en dictionnaire JSON."""
-    return asdict(schedule)
+def schedule_to_dict(schedule, scheduler):
+    """Convertit un Schedule en dictionnaire JSON (avec sa prochaine exécution)."""
+    data = asdict(schedule)
+    next_run = scheduler.get_next_run_time(schedule.id)
+    data["next_run_time"] = next_run.isoformat() if next_run else None
+    return data
 
 
 def _forbidden(schedule_id: str):
@@ -37,7 +40,7 @@ async def list_schedules(request: Request):
         ]
 
     return JSONResponse([
-        schedule_to_dict(schedule)
+        schedule_to_dict(schedule, scheduler)
         for schedule in schedules
     ])
 
@@ -63,7 +66,7 @@ async def get_schedule(request: Request):
     if not is_admin(request) and schedule.owner != get_user(request):
         return _forbidden(schedule_id)
 
-    return JSONResponse(schedule_to_dict(schedule))
+    return JSONResponse(schedule_to_dict(schedule, scheduler))
 
 
 async def create_schedule(request: Request):
@@ -116,7 +119,7 @@ async def create_schedule(request: Request):
         )
 
     return JSONResponse(
-        schedule_to_dict(schedule),
+        schedule_to_dict(schedule, scheduler),
         status_code=201,
     )
 

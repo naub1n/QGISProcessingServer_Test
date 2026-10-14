@@ -32,6 +32,10 @@ curl --location --request POST 'http://localhost:8080/schedules' \
 
 `curl --location 'http://localhost:8080/schedules'
 `
+
+Chaque planification renvoie `next_run_time` (prochaine exécution, `null` si
+désactivée).
+
 ### Arrêter une planification
 
 `curl --location --request POST 'http://localhost:8080/schedules/test/disable'
@@ -118,6 +122,9 @@ Les paramètres envoyés au démarrage d'un job sont conservés : `GET /oapi/job
 renvoie les clés de la requête d'exécution OGC (`inputs`, `outputs`, `response`,
 `subscriber`, `null` si absentes ; `response` vaut `raw` par défaut). Les jobs
 créés avant cette fonctionnalité renvoient des `null`.
+
+`scheduleID` indique la planification à l'origine du job (`null` pour un job
+lancé manuellement).
 
 ```bash
 curl 'http://localhost:8080/oapi/jobs/<jobID>' -H 'X-Forwarded-User: alice'

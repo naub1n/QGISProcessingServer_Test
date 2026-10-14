@@ -59,6 +59,17 @@ current_is_admin_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "current_is_admin", default=False
 )
 
+# Planification à l'origine de la requête courante (jobs lancés par le
+# scheduler), pour que le process manager puisse lier le job à celle-ci.
+current_schedule_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "current_schedule", default=None
+)
+
+# Header posé par le scheduler sur ses appels internes ; n'est pris en compte
+# que pour les requêtes venant de la boucle locale (jamais via Traefik).
+SCHEDULE_HEADER = "X-Schedule-Id"
+LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
 
 class ContextPreservingExecutor(concurrent.futures.ThreadPoolExecutor):
     """
@@ -151,11 +162,17 @@ class ForwardedUserMiddleware(BaseHTTPMiddleware):
         request.state.groups = groups
         request.state.is_admin = is_admin_user
 
+        schedule_id = None
+        if request.client and request.client.host in LOCAL_HOSTS:
+            schedule_id = request.headers.get(SCHEDULE_HEADER)
+
         user_token = current_user_var.set(user)
         admin_token = current_is_admin_var.set(is_admin_user)
+        schedule_token = current_schedule_var.set(schedule_id)
 
         try:
             return await call_next(request)
         finally:
             current_user_var.reset(user_token)
             current_is_admin_var.reset(admin_token)
+            current_schedule_var.reset(schedule_token)

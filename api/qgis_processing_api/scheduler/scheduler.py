@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import httpx
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -170,6 +171,15 @@ class Scheduler:
 
         return self._get_schedule(schedule_id)
 
+    def get_next_run_time(self, schedule_id: str) -> datetime | None:
+        """Prochaine exécution prévue, None si désactivée/inconnue."""
+
+        job = self._scheduler.get_job(schedule_id)
+
+        # Un job ajouté avant le démarrage du scheduler n'a pas encore
+        # de next_run_time (état "pending").
+        return getattr(job, "next_run_time", None) if job else None
+
     def list_schedules(self) -> list[Schedule]:
         """Retourne toutes les tâches."""
 
@@ -247,6 +257,7 @@ class Scheduler:
                 process_id=schedule.process_id,
                 inputs=schedule.inputs,
                 owner=schedule.owner,
+                schedule_id=schedule.id,
             )
 
             logger.info(
@@ -266,6 +277,7 @@ class Scheduler:
         process_id: str,
         inputs: dict[str, Any],
         owner: str | None = None,
+        schedule_id: str | None = None,
     ) -> str:
         url = f"http://127.0.0.1:8000/oapi/processes/{process_id}/execution"
 
@@ -279,6 +291,11 @@ class Scheduler:
             # l'utilisateur porté par ce header, comme pour un appel
             # entrant via Traefik.
             headers["X-Forwarded-User"] = owner
+
+        if schedule_id:
+            # Lie le job pygeoapi à sa planification (cf. auth.py : header
+            # accepté uniquement depuis la boucle locale).
+            headers["X-Schedule-Id"] = schedule_id
 
         logger.info(
             "Calling pygeoapi process endpoint: %s",

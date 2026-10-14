@@ -26,6 +26,8 @@ from contextvars import ContextVar
 
 import pygeoapi.api.processes as processes_api
 
+from auth import current_schedule_var
+
 LOGGER = logging.getLogger(__name__)
 
 # Clés OGC de la requête d'exécution, reprises dans la description du job.
@@ -76,6 +78,12 @@ class JobParametersMixin:
         parameters = _parameters_var.get()
 
         if parameters is not None:
+            # schedule_id voyage dans `parameters` : pygeoapi ne relit que
+            # cette clé (les clés inconnues du job sont ignorées).
+            parameters = {
+                **parameters,
+                "schedule_id": current_schedule_var.get(),
+            }
             job_metadata = {**job_metadata, "parameters": parameters}
 
         return super().add_job(job_metadata)
@@ -88,6 +96,9 @@ def _describe_job(job: dict) -> None:
 
     for key in EXECUTION_KEYS:
         job[key] = parameters.get(key)
+
+    # Planification à l'origine du job (null pour un job lancé à la main).
+    job["scheduleID"] = parameters.get("schedule_id")
 
 
 def _get_jobs_with_parameters(original):
