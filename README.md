@@ -1,5 +1,7 @@
 # QGIS Processing Server - Test
 
+Ce service fonctionne avec le plugin QGIS [QGISProcessingServerPlugin](https://github.com/naub1n/QGISProcessingServerPlugin).
+
 ## Utilisation
 
 ### Planifier un job
