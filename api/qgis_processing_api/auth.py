@@ -8,6 +8,13 @@ Gestion des utilisateurs à partir des headers injectés par Traefik
 L'API n'est jamais exposée autrement que derrière Traefik : ces headers
 sont donc considérés comme fiables et ne sont pas revalidés ici.
 
+Deuxième méthode : un access token Azure AD / Entra ID (JWT) envoyé en
+`Authorization: Bearer <token>` (cas du plugin QGIS, qui contourne Traefik).
+Il est validé ici (signature via JWKS, exp, iss, aud). Le Bearer est
+prioritaire s'il est présent ; sinon on retombe sur les headers Traefik.
+Variables : OIDC_TENANT_ID et OIDC_AUDIENCE (obligatoires pour activer le
+Bearer), OIDC_ISSUER, OIDC_JWKS_URL, OIDC_USER_CLAIM, OIDC_GROUPS_CLAIM.
+
 La fonctionnalité peut être désactivée entièrement via AUTH_ENABLED=false
 (aucun header requis, aucune restriction, owner laissé vide sur les jobs
 et les planifications).
@@ -19,6 +26,9 @@ import concurrent.futures
 import contextvars
 import os
 
+import jwt
+from jwt import PyJWKClient
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -47,6 +57,95 @@ ADMIN_GROUPS = {
     for group in os.environ.get("ADMIN_GROUPS", "").split(",")
     if group.strip()
 }
+
+# Liste blanche d'accès (en plus des admins). Si au moins une des deux est
+# définie, seuls les utilisateurs listés ou membres d'un groupe listé passent
+# (403 sinon). Vides = tout utilisateur authentifié est accepté.
+ALLOWED_USERS = {
+    u.strip() for u in os.environ.get("ALLOWED_USERS", "").split(",") if u.strip()
+}
+ALLOWED_GROUPS = {
+    g.strip() for g in os.environ.get("ALLOWED_GROUPS", "").split(",") if g.strip()
+}
+
+def _csv(name: str) -> list[str]:
+    return [v.strip() for v in os.environ.get(name, "").split(",") if v.strip()]
+
+
+# --- Validation des tokens Bearer (Azure AD / Entra ID) ---------------------
+# Actif seulement si OIDC_TENANT_ID et OIDC_AUDIENCE sont définis.
+OIDC_TENANT_ID = os.environ.get("OIDC_TENANT_ID", "").strip()
+# Audiences acceptées (claim `aud`), ex: "api://<client-id>,<client-id>".
+OIDC_AUDIENCES = _csv("OIDC_AUDIENCE")
+# Issuers acceptés : v2.0 et v1.0 par défaut (selon `accessTokenAcceptedVersion`
+# de l'enregistrement d'application).
+OIDC_ISSUERS = _csv("OIDC_ISSUER") or (
+    [
+        f"https://login.microsoftonline.com/{OIDC_TENANT_ID}/v2.0",
+        f"https://sts.windows.net/{OIDC_TENANT_ID}/",
+    ]
+    if OIDC_TENANT_ID
+    else []
+)
+OIDC_JWKS_URL = os.environ.get("OIDC_JWKS_URL") or (
+    f"https://login.microsoftonline.com/{OIDC_TENANT_ID}/discovery/v2.0/keys"
+    if OIDC_TENANT_ID
+    else ""
+)
+# Claims utilisateur essayés dans l'ordre (v2 : preferred_username ; v1 : upn).
+OIDC_USER_CLAIMS = _csv("OIDC_USER_CLAIM") or [
+    "preferred_username", "upn", "unique_name", "email", "oid", "sub",
+]
+# Claims de groupes : `groups` (GUID des groupes, à activer dans l'app
+# registration) et `roles` (app roles).
+OIDC_GROUPS_CLAIMS = _csv("OIDC_GROUPS_CLAIM") or ["groups", "roles"]
+
+BEARER_ENABLED = bool(OIDC_TENANT_ID and OIDC_AUDIENCES and OIDC_JWKS_URL)
+_jwks_client = (
+    PyJWKClient(OIDC_JWKS_URL, cache_keys=True) if BEARER_ENABLED else None
+)
+
+
+class InvalidToken(Exception):
+    pass
+
+
+def identity_from_bearer(token: str) -> tuple[str, list[str]]:
+    """Valide un JWT Azure AD et retourne (utilisateur, groupes)."""
+
+    try:
+        key = _jwks_client.get_signing_key_from_jwt(token).key
+        # L'issuer est vérifié à la main : v1 et v2 sont acceptés.
+        claims = jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            audience=OIDC_AUDIENCES,
+            options={"require": ["exp", "iss", "aud"]},
+        )
+    except jwt.PyJWTError as exc:
+        raise InvalidToken(str(exc)) from exc
+
+    if claims.get("iss") not in OIDC_ISSUERS:
+        raise InvalidToken("Invalid issuer")
+    if claims.get("tid") not in (None, OIDC_TENANT_ID):
+        raise InvalidToken("Invalid tenant")
+
+    user = next(
+        (str(claims[c]) for c in OIDC_USER_CLAIMS if claims.get(c)), None
+    )
+    if not user:
+        raise InvalidToken("No user claim in token")
+
+    groups: list[str] = []
+    for claim in OIDC_GROUPS_CLAIMS:
+        value = claims.get(claim)
+        if isinstance(value, str):
+            value = [value]
+        groups.extend(str(v) for v in value or [])
+
+    return user, groups
+
 
 # Copie de l'utilisateur courant accessible en dehors du cycle
 # requête/réponse Starlette (ex: process manager de pygeoapi, qui ne
@@ -137,25 +236,53 @@ class ForwardedUserMiddleware(BaseHTTPMiddleware):
         if not AUTH_ENABLED:
             user, groups, is_admin_user = None, [], True
         else:
-            user = request.headers.get(USER_HEADER)
+            user = None
+            groups: list[str] = []
 
-            groups = [
-                group.strip()
-                for group in request.headers.get(GROUPS_HEADER, "").split(",")
-                if group.strip()
-            ]
+            authorization = request.headers.get("Authorization", "")
+            if BEARER_ENABLED and authorization.lower().startswith("bearer "):
+                try:
+                    # Appel réseau bloquant possible (JWKS, mis en cache).
+                    user, groups = await run_in_threadpool(
+                        identity_from_bearer, authorization[7:].strip()
+                    )
+                except InvalidToken as exc:
+                    return JSONResponse(
+                        {"error": f"Invalid bearer token: {exc}"},
+                        status_code=401,
+                    )
+            else:
+                user = request.headers.get(USER_HEADER)
+                groups = [
+                    group.strip()
+                    for group in request.headers.get(GROUPS_HEADER, "").split(",")
+                    if group.strip()
+                ]
 
             if not user and request.url.path not in PUBLIC_PATHS:
                 return JSONResponse(
                     {
-                        "error":
-                            f"Missing authenticated user ({USER_HEADER} header)"
+                        "error": "Missing authenticated user "
+                        f"({USER_HEADER} header or Bearer token)"
                     },
                     status_code=401,
                 )
 
             is_admin_user = (
                 user in ADMIN_USERS or bool(ADMIN_GROUPS & set(groups))
+            )
+
+        if (
+            AUTH_ENABLED
+            and (ALLOWED_USERS or ALLOWED_GROUPS)
+            and request.url.path not in PUBLIC_PATHS
+            and not is_admin_user
+            and user not in ALLOWED_USERS
+            and not (ALLOWED_GROUPS & set(groups))
+        ):
+            return JSONResponse(
+                {"error": "User is not allowed to access this API"},
+                status_code=403,
             )
 
         request.state.user = user

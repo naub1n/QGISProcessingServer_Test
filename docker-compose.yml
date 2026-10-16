@@ -24,6 +24,15 @@ services:
       # Attente maximale (secondes) des jobs en cours avant de les annuler
       # (motif : redémarrage). Défaut : 1800.
       # QGIS_RESTART_DRAIN_TIMEOUT: "1800"
+      # Validation directe des tokens Bearer Azure AD / Entra ID (plugin QGIS,
+      # sans Traefik). Actif si OIDC_TENANT_ID et OIDC_AUDIENCE sont définis ;
+      # le Bearer est prioritaire sur les headers Traefik.
+      # OIDC_TENANT_ID: "<tenant-id>"
+      # OIDC_AUDIENCE: "api://<client-id>,<client-id>"
+      # Restreint l'accès (les admins passent toujours) ; vides = tout utilisateur
+      # authentifié est accepté. Groupes : noms (Traefik) ou GUID (Azure).
+      # ALLOWED_USERS: "alice,bob"
+      # ALLOWED_GROUPS: "qgis-users"
       # ADMIN_USERS: "alice,bob"
       # ADMIN_GROUPS: "admins"
     volumes:
@@ -32,13 +41,21 @@ services:
       - ./api/data:/data
 #    labels:
 #      traefik.enable: true
-#      traefik.http.routers.r_pygeoapi.rule: Host(`ogcapi.exemple.com`)
-#      traefik.http.routers.r_ogc_api.entrypoints: websecure
-#      traefik.http.routers.r_ogc_api.tls: true
-#      traefik.http.routers.r_ogc_api.priority: 10
-#      traefik.http.services.s_ogc_api.loadbalancer.server.port: 8000
-#      traefik.http.routers.r_ogc_api.service: s_ogc_api
-#      traefik.http.routers.r_ogc_api.middlewares: oidc-base@file
+#      # Routeur SANS middleware si Authorization est présent (pour accès via QGIS)
+#      traefik.http.routers.r_pygeoapi_with_h.rule: Host(`ogcapi.exemple.com`) && HeaderRegexp(`Authorization`, `.+`)
+#      traefik.http.routers.r_pygeoapi_with_h.entrypoints: websecure
+#      traefik.http.routers.r_pygeoapi_with_h.tls: true
+#      traefik.http.routers.r_pygeoapi_with_h.priority: 15
+#      traefik.http.routers.r_pygeoapi_with_h.service: s_pygeoapi
+#      # Routeur AVEC middleware si Authorization est absent (pour accès via navigateur)
+#      traefik.http.routers.r_pygeoapi_without_h.rule: Host(`ogcapi.exemple.com`)
+#      traefik.http.routers.r_pygeoapi_without_h.entrypoints: websecure
+#      traefik.http.routers.r_pygeoapi_without_h.tls: true
+#      traefik.http.routers.r_pygeoapi_without_h.priority: 10
+#      traefik.http.routers.r_pygeoapi_without_h.service: s_pygeoapi
+#      traefik.http.routers.r_pygeoapi_without_h.middlewares: oidc-ogc_api@file
+#      # Spécification du service
+#      traefik.http.services.s_pygeoapi.loadbalancer.server.port: 8000
 
     depends_on:
       - qgis-worker

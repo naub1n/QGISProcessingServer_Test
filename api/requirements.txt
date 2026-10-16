@@ -5,6 +5,7 @@ apscheduler==3.11.0
 tzdata
 aiofiles
 httpx
+pyjwt[crypto]
 
 # A decommenter selon le manager pygeoapi utilise (cf. pygeoapi.yml) :
 # UserPostgreSQLManager a besoin d'un driver DBAPI, UserMongoDBManager de pymongo.

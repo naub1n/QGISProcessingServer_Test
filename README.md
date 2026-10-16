@@ -48,7 +48,7 @@ http://localhost:8080/oapi/
 
 ## Gestion des utilisateurs
 
-L'API ne gère pas elle-même l'authentification : elle fait confiance aux
+L'API accepte deux méthodes d'authentification (voir aussi « Token Bearer » plus bas). Par défaut elle fait confiance aux
 headers injectés par **Traefik** (middleware OIDC / forward-auth) placé
 devant elle :
 
@@ -57,8 +57,8 @@ devant elle :
 
 L'API ne doit **jamais** être joignable autrement que via Traefik, sans
 quoi ces headers pourraient être forgés par n'importe quel client. Un
-exemple de configuration des labels Traefik (règle de routage, middleware
-`oidc-base@file`, etc.) est fourni en commentaire dans
+exemple de configuration des labels Traefik (deux routeurs : sans middleware si `Authorization` est présent, pour QGIS ; avec middleware
+OIDC sinon, pour le navigateur) est fourni en commentaire dans
 [docker-compose.yml](docker-compose.yml).
 
 Ce que ça change concrètement :
@@ -208,6 +208,32 @@ planifications). Une exécution qui tombait pendant un redémarrage est sautée,
 rattrapée ; une planification `interval` repart de zéro.
 
 ### Désactiver la gestion des utilisateurs
+
+### Token Bearer (Azure AD / Entra ID)
+
+En plus des headers Traefik, l'API valide elle-même un access token JWT
+envoyé en `Authorization: Bearer <token>` (cas du plugin QGIS, configuration
+d'authentification OAuth2). Signature (JWKS Azure), `exp`, `iss`, `aud` et
+`tid` sont vérifiés. Le Bearer est prioritaire ; sans lui, les headers
+Traefik restent utilisés.
+
+```yaml
+environment:
+  OIDC_TENANT_ID: "<tenant-id>"
+  OIDC_AUDIENCE: "api://<client-id>,<client-id>"   # claim aud accepté
+  # Optionnels : OIDC_ISSUER, OIDC_JWKS_URL, OIDC_USER_CLAIM, OIDC_GROUPS_CLAIM
+```
+
+Utilisateur : `preferred_username` (v2) puis `upn`, `unique_name`, `email`,
+`oid`, `sub`. Groupes : claims `groups` (GUID, à activer dans l'app
+registration) et `roles`. `ADMIN_GROUPS` doit donc contenir des GUID de
+groupes (ou des app roles). Côté Traefik, les requêtes portant `Authorization` doivent
+être routées sans forward-auth (cf. labels). Le token doit être émis pour *votre* API
+(scope `api://<client-id>/...`), pas pour Microsoft Graph.
+
+### Restriction d'accès
+
+L'API vérifie elle-même que l'utilisateur est autorisé (Traefik ne le fait plus pour le Bearer) : si `ALLOWED_USERS` et/ou `ALLOWED_GROUPS` (listes séparées par des virgules) sont définis, seuls les utilisateurs listés, membres d'un groupe listé, ou admins passent ; les autres reçoivent un 403. Sans ces variables, tout utilisateur authentifié est accepté. Avec Azure, `ALLOWED_GROUPS` contient des GUID de groupes.
 
 Si l'API n'est pas (encore) placée derrière un Traefik avec OIDC, la
 fonctionnalité peut être désactivée entièrement via la variable
