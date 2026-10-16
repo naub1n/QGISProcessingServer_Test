@@ -1,3 +1,4 @@
+import ast
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -83,6 +84,11 @@ class JobRequest(BaseModel):
 class ModelRequest(BaseModel):
     name: str
     model3: str
+
+
+class ScriptRequest(BaseModel):
+    name: str
+    script: str
 
 
 class QGISExecutionError(Exception):
@@ -353,6 +359,33 @@ def check_algorithm(algorithm_id: str, details: bool = False):
     return response
 
 
+def write_source_file(directory: str, filename: str, content: str,
+                      kind: str) -> bool:
+    """
+    Écrit atomiquement `content` dans `directory/filename` (jamais de
+    fichier tronqué exposé à QGIS). Renvoie vrai si le fichier existait.
+    """
+
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, filename)
+    existed = os.path.exists(path)
+
+    tmp_path = f"{path}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+    except OSError as e:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise HTTPException(
+            status_code=500,
+            detail={"message": f"Unable to write {kind}: {e}"}
+        ) from e
+
+    return existed
+
+
 @app.post("/models", status_code=201)
 def publish_model(request: ModelRequest):
     """
@@ -384,23 +417,9 @@ def publish_model(request: ModelRequest):
                                "must be <Option>"}
         )
 
-    os.makedirs(MODELS_DIR, exist_ok=True)
-    path = os.path.join(MODELS_DIR, f"{request.name}.model3")
-    existed = os.path.exists(path)
-
-    # Écriture atomique pour ne jamais exposer un modèle tronqué
-    tmp_path = f"{path}.{uuid.uuid4().hex[:8]}.tmp"
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(request.model3)
-        os.replace(tmp_path, path)
-    except OSError as e:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise HTTPException(
-            status_code=500,
-            detail={"message": f"Unable to write model: {e}"}
-        ) from e
+    existed = write_source_file(
+        MODELS_DIR, f"{request.name}.model3", request.model3, "model"
+    )
 
     logger.info("Modèle %s %s", request.name,
                 "remplacé" if existed else "publié")
@@ -410,6 +429,41 @@ def publish_model(request: ModelRequest):
         "algorithm": f"model:{request.name}",
         "replaced": existed
     }
+
+
+@app.post("/scripts", status_code=201)
+def publish_script(request: ScriptRequest):
+    """
+    Publie un script de traitement QGIS (.py) dans le dossier des scripts
+    du profil. Son identifiant (`script:<nom de l'algorithme>`) est celui
+    que renvoie `name()` dans le script, pas le nom du fichier.
+    """
+
+    if not MODEL_NAME_RE.match(request.name):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Invalid script name: use letters, digits, "
+                           "'_', '-' or '.' only (max 100 characters)"
+            }
+        )
+
+    try:
+        ast.parse(request.script)
+    except SyntaxError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": f"Invalid Python script: {e}"}
+        ) from e
+
+    existed = write_source_file(
+        SCRIPTS_DIR, f"{request.name}.py", request.script, "script"
+    )
+
+    logger.info("Script %s %s", request.name,
+                "remplacé" if existed else "publié")
+
+    return {"name": request.name, "replaced": existed}
 
 
 @app.post("/execute")

@@ -105,11 +105,19 @@ async def me(request: Request):
 WORKER_URL = os.environ.get("QGIS_WORKER_URL", "http://qgis-worker:8000")
 
 
-async def publish_worker_model(request: Request):
+async def publish_to_worker(request: Request, path: str, content_field: str):
     """
-    Publie un modèle QGIS sur le worker.
-    Corps attendu : {"name": "<nom>", "model3": "<contenu XML du .model3>"}
+    Relaie vers le worker la publication d'un modèle ou d'un script.
+    Réservé aux administrateurs : un script est du code exécuté sur le
+    worker, et un modèle peut en embarquer indirectement.
+    Corps attendu : {"name": "<nom>", "<content_field>": "<contenu>"}
     """
+
+    if not is_admin(request):
+        return JSONResponse(
+            {"message": "Only administrators can publish models and scripts"},
+            status_code=403,
+        )
 
     try:
         payload = await request.json()
@@ -122,18 +130,22 @@ async def publish_worker_model(request: Request):
     if (
         not isinstance(payload, dict)
         or not isinstance(payload.get("name"), str)
-        or not isinstance(payload.get("model3"), str)
+        or not isinstance(payload.get(content_field), str)
     ):
         return JSONResponse(
-            {"message": "Body must be {\"name\": str, \"model3\": str}"},
+            {"message": f"Body must be {{\"name\": str, "
+                        f"\"{content_field}\": str}}"},
             status_code=400,
         )
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                f"{WORKER_URL}/models",
-                json={"name": payload["name"], "model3": payload["model3"]},
+                f"{WORKER_URL}/{path}",
+                json={
+                    "name": payload["name"],
+                    content_field: payload[content_field],
+                },
             )
     except httpx.HTTPError as e:
         return JSONResponse(
@@ -152,6 +164,18 @@ async def publish_worker_model(request: Request):
     return JSONResponse(body, status_code=response.status_code)
 
 
+async def publish_worker_model(request: Request):
+    """Corps : {"name": "<nom>", "model3": "<contenu XML du .model3>"}"""
+
+    return await publish_to_worker(request, "models", "model3")
+
+
+async def publish_worker_script(request: Request):
+    """Corps : {"name": "<nom>", "script": "<code Python du script>"}"""
+
+    return await publish_to_worker(request, "scripts", "script")
+
+
 # ----------------------------------------------------------------------
 # Application
 # ----------------------------------------------------------------------
@@ -159,11 +183,16 @@ async def publish_worker_model(request: Request):
 routes = [
     Route("/", homepage),
     Route("/me", me),
-    # Publication de modèles sur le worker QGIS (déclaré avant le mount
-    # /oapi pour prendre le pas sur pygeoapi)
+    # Publication de modèles/scripts sur le worker QGIS (admin uniquement ;
+    # déclaré avant le mount /oapi pour prendre le pas sur pygeoapi)
     Route(
         "/oapi/worker/models",
         publish_worker_model,
+        methods=["POST"],
+    ),
+    Route(
+        "/oapi/worker/scripts",
+        publish_worker_script,
         methods=["POST"],
     ),
     # Scheduler

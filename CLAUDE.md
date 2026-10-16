@@ -42,6 +42,8 @@ This is a two-container system that exposes a [pygeoapi](https://pygeoapi.io/) O
 `app.py` also proxies a route to the worker, via `httpx` to `WORKER_URL` (502 if the worker is unreachable; FastAPI's `{"detail": ...}` error wrapper is unwrapped):
 
 - `POST /oapi/worker/models` with `{"name", "model3"}` → worker `POST /models`, which validates the name (`MODEL_NAME_RE`) and that the XML root is `<Option>`, then atomically writes `<name>.model3` into `MODELS_DIR` (the `./worker/processing/models` volume), overwriting any existing model. Usable afterwards as `model:<name>`.
+- `POST /oapi/worker/scripts` with `{"name", "script"}` → worker `POST /scripts` (name check, `ast.parse`, atomic write of `<name>.py` into `SCRIPTS_DIR`). The id is `script:<name()>` from the script, not the file name.
+- Both routes are **admin-only** (`publish_to_worker` in `app.py` checks `is_admin`, 403 otherwise; scripts are arbitrary code run on the worker). With `AUTH_ENABLED=false` everyone is admin.
 
 This route is declared **before** the `/oapi` mount in `routes` so it takes precedence over pygeoapi; moving it after the mount would silently route them to pygeoapi (404). Algorithm listing/lookup is no longer proxied: use `/oapi/processes[/{id}]` (published algorithms only). The worker's own `GET /algorithms` and `GET /algorithms/{id}[?details=true]` remain, used by `generate_config.py`; `GET /algorithms` must stay declared before `/algorithms/{algorithm_id:path}`.
 

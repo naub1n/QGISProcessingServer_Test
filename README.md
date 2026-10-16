@@ -90,13 +90,21 @@ curl 'http://localhost:8080/oapi/processes/native:buffer' -H 'X-Forwarded-User: 
 curl 'http://localhost:8080/oapi/processes/model:ma_procedure' -H 'X-Forwarded-User: alice'
 ```
 
-### Publier un modèle
+### Publier un modèle ou un script
+
+**Réservé aux administrateurs** (`ADMIN_USERS` / `ADMIN_GROUPS`) : 403 sinon,
+un script étant du code exécuté sur le worker.
 
 `POST /oapi/worker/models` dépose un modèle `.model3` dans le dossier des
 modèles du worker (écrase un modèle de même nom). Il est ensuite utilisable
 via l'identifiant `model:<name>` ; il apparaît dans `/oapi/processes` après le
 prochain redémarrage de l'application (cf. « Redémarrage planifié » plus bas).
-Réponses : 201 (publié), 400 (nom ou XML invalide), 502 (worker injoignable).
+Réponses : 201 (publié), 400 (nom ou XML invalide), 403 (non admin),
+502 (worker injoignable).
+
+`POST /oapi/worker/scripts` fait de même pour un script de traitement Python
+(corps `{"name", "script"}`, syntaxe vérifiée). Son identifiant est
+`script:<nom renvoyé par name() dans le script>`, et non le nom du fichier.
 
 ```bash
 curl -X POST 'http://localhost:8080/oapi/worker/models' \
